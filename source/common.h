@@ -1,5 +1,7 @@
 #pragma once
 
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
+
 static void PrintQueueFamilyProperties(const std::vector<VkQueueFamilyProperties>& queue_family_props)
 {
 	auto flag_to_str = [](VkQueueFlags flag)
@@ -337,4 +339,33 @@ static const char* VkPresentModeKHR2Str(VkPresentModeKHR present_mode)
 		default: return "wtf";
 	}
 #undef VKENUM_2_STR
+}
+
+static std::string VkSurfaceTransformFlagKHR2Str(VkSurfaceTransformFlagsKHR transfor)
+{
+	std::string str;
+#define SurfaceTransformFlagBitsKHR2Str(FLAG) if(transfor & FLAG) str += std::string(str.empty() ? "" : " | ") + #FLAG;
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR)
+#undef SurfaceTransformFlagBitsKHR2Str
+	return str.empty() ? std::string("0") : str;
+}
+
+static std::string VkCompositeAlphaFlagBitsKHR2Str(VkCompositeAlphaFlagsKHR flag)
+{
+	std::string str;
+#define SurfaceTransformFlagBitsKHR2Str(FLAG) if(flag & FLAG) str += std::string(str.empty() ? "" : " | ") + #FLAG;
+	SurfaceTransformFlagBitsKHR2Str(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR)
+	SurfaceTransformFlagBitsKHR2Str(VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)
+#undef SurfaceTransformFlagBitsKHR2Str
+	return str.empty() ? std::string("0") : str;
 }
