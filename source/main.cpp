@@ -1,9 +1,12 @@
 ﻿#include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <vector>
 
 #include "vulkan/vulkan.h"
 #include "common.h"
+
+#include "CubeTexture.h"
 
 //准备启用的layer
 const char* g_enabled_global_layers[] = {"VK_LAYER_KHRONOS_validation"};
@@ -54,11 +57,21 @@ struct Depth
 {
 	VkFormat format;
 	VkImage image;
-	VkMemoryAllocateInfo mem_alloc;
 	VkDeviceMemory mem;
 	VkImageView view;
 };
 Depth g_depth;
+
+//盒子的贴图
+struct Texture
+{
+	int32_t tex_width, tex_height;
+	VkSampler sampler;
+	VkImage image;
+	VkDeviceMemory mem;
+	VkImageView view;
+};
+Texture g_texture;
 
 void EnumerateGlobalExtAndLayer()
 {
@@ -663,8 +676,26 @@ void PrepareSwapchain()
 	InitSwapchain();
 }
 
+int GetMemoryTypeFromProperties(uint32_t typeBits, VkFlags requirements_mask)
+{
+	//找到第一个满足所有requirement的type
+	for (uint32_t i = 0; i < VK_MAX_MEMORY_TYPES; i++) {
+		if ((typeBits & 1) == 1) {
+			// Type is available, does it match user properties?
+			if ((g_memory_properties.memoryTypes[i].propertyFlags & requirements_mask) == requirements_mask) {
+				return i;
+			}
+		}
+		typeBits >>= 1;
+	}
+	//这里需要错误处理
+	std::cout << "err: can't find any memory type that matches flag: " << requirements_mask << std::endl;
+	return -1;
+}
+
 void PrepareDepth()
 {
+	//创建VkImage
 	g_depth.format = VK_FORMAT_D16_UNORM;
 	const VkImageCreateInfo ci = {
 		/*.sType = */VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -684,11 +715,204 @@ void PrepareDepth()
 		/*.initialLayout = */VK_IMAGE_LAYOUT_UNDEFINED
 	};
 	vkCreateImage(g_device, &ci, NULL, &g_depth.image);
+
+	//获取内存需求
+	VkMemoryRequirements mem_reqs;
+	vkGetImageMemoryRequirements(g_device, g_depth.image, &mem_reqs);
+
+	//分配内存
+	uint32_t memory_type_index = GetMemoryTypeFromProperties(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	VkMemoryAllocateInfo mem_alloc_info = {
+		/*sType*/ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		/*pNext*/ NULL,
+		/*allocationSize*/ mem_reqs.size,
+		/*memoryTypeIndex*/ memory_type_index
+	};
+	vkAllocateMemory(g_device, &mem_alloc_info, NULL, &g_depth.mem);
+
+	//绑定内存到VkImage
+	vkBindImageMemory(g_device, g_depth.image, g_depth.mem, 0);
+
+	//创建ImageView
+	VkImageViewCreateInfo view = {
+		/*.sType = */VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags =*/ 0,
+		/*.image = */g_depth.image,
+		/*.viewType = */VK_IMAGE_VIEW_TYPE_2D,
+		/*.format = */g_depth.format,
+		/*.components =*/
+		{
+			VK_COMPONENT_SWIZZLE_R,
+			VK_COMPONENT_SWIZZLE_G,
+			VK_COMPONENT_SWIZZLE_B,
+			VK_COMPONENT_SWIZZLE_A,
+		},
+		/*.subresourceRange =*/
+		{
+			/*.aspectMask = */VK_IMAGE_ASPECT_DEPTH_BIT,
+			/*.baseMipLevel = */0,
+			/*.levelCount = */1,
+			/*.baseArrayLayer = */0,
+			/*.layerCount = */1
+		}
+	};
+	vkCreateImageView(g_device, &view, NULL, &g_depth.view);
+}
+
+void PrepareCubeTexture()
+{
+	//我们的texture是R8G8B8A8格式
+	const VkFormat tex_format = VK_FORMAT_R8G8B8A8_UNORM;
+	const VkImageTiling tiling = VK_IMAGE_TILING_LINEAR;
+	const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+	//获取对应格式的FormatProperties
+	VkFormatProperties props;
+	vkGetPhysicalDeviceFormatProperties(g_gpu, tex_format, &props);
+	PrintPhysicalDeviceFormatProperties(tex_format, props);
+	//验证这个gpu是可以处理我们这个格式的
+	if (props.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT )
+	{
+		std::cout << "err: No support for R8G8B8A8_UNORM as texture image format" << std::endl;
+	}
+
+	int32_t tex_width;
+	int32_t tex_height;
+	//首先把其他参数填为NULL，只获取图片长宽
+	if (!loadTexture(NULL, 0, &tex_width, &tex_height)) 
+	{
+		std::cout << "err: Failed to load textures" << std::endl;;
+	}
+	g_texture.tex_width = tex_width;
+	g_texture.tex_height = tex_height;
+
+	//先把VkImage创建出来
+	const VkImageCreateInfo image_create_info = {
+		/*.sType = */VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags = */0u,
+		/*.imageType = */VK_IMAGE_TYPE_2D,
+		/*.format = */tex_format,
+		/*.extent = */{tex_width, tex_height, 1},
+		/*.mipLevels = */1,
+		/*.arrayLayers = */1,
+		/*.samples = */VK_SAMPLE_COUNT_1_BIT,
+		/*.tiling = */tiling,
+		/*.usage = */usage,
+		/*.sharingMode = */VK_SHARING_MODE_EXCLUSIVE,
+		/*.queueFamilyIndexCount = */ 0u,
+		/*.pQueueFamilyIndices = */ NULL,
+		/*.initialLayout = */VK_IMAGE_LAYOUT_PREINITIALIZED,
+	};
+	vkCreateImage(g_device, &image_create_info, NULL, &g_texture.image);
+
+	//获取内存需求
+	VkMemoryRequirements mem_reqs;
+	vkGetImageMemoryRequirements(g_device, g_texture.image, &mem_reqs);
+
+	//分配内存
+	const VkFlags required_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	uint32_t memory_type_index = GetMemoryTypeFromProperties(mem_reqs.memoryTypeBits, required_props);
+	VkMemoryAllocateInfo mem_alloc_info = {
+		/*sType*/ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		/*pNext*/ NULL,
+		/*allocationSize*/ mem_reqs.size,
+		/*memoryTypeIndex*/ memory_type_index
+	};
+	vkAllocateMemory(g_device, &mem_alloc_info, NULL, &g_texture.mem);
+
+	//绑定内存到VkImage
+	vkBindImageMemory(g_device, g_texture.image, g_texture.mem, 0);
+
+	//读取图像内容，map到texture memory中
+	assert(required_props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT); //注意这里必须是host visible的，才可以map/unmap写入
+	const VkImageSubresource subres = {
+		/*.aspectMask = */VK_IMAGE_ASPECT_COLOR_BIT,
+		/*.mipLevel = */0,
+		/*.arrayLayer = */0,
+	};
+	VkSubresourceLayout layout;
+	vkGetImageSubresourceLayout(g_device, g_texture.image, &subres, &layout); //获取layout是为了得到rowPitch
+
+	void* data;
+	vkMapMemory(g_device, g_texture.mem, 0, mem_alloc_info.allocationSize, 0, &data);
+	if (!loadTexture((uint8_t*)data, layout.rowPitch, &tex_width, &tex_height)) 
+	{
+		std::cout << "err: Failed to load texture" << std::endl;;
+	}
+	vkUnmapMemory(g_device, g_texture.mem);
+
+	//下面开始设置image layout
+	const VkImageLayout old_image_layout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+	const VkImageLayout new_image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkImageMemoryBarrier image_memory_barrier = {
+		/*.sType = */VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		/*.pNext = */NULL,
+		/*.srcAccessMask = */0,
+		/*.dstAccessMask = */VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+		/*.oldLayout = */old_image_layout,
+		/*.newLayout = */new_image_layout,
+		/*.srcQueueFamilyIndex = */0,
+		/*.dstQueueFamilyIndex = */0,
+		/*.image = */g_texture.image,
+		/*.subresourceRange = */{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}
+	};
+	//由于涉及到texture transition，我们必须设置image memory barrier
+	vkCmdPipelineBarrier(g_init_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &image_memory_barrier);
+
+	//开始创建sampler
+	const VkSamplerCreateInfo sampler_ci = {
+		/*.sType = */VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags = */0,
+		/*.magFilter = */VK_FILTER_NEAREST,
+		/*.minFilter = */VK_FILTER_NEAREST,
+		/*.mipmapMode = */VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		/*.addressModeU = */VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		/*.addressModeV = */VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		/*.addressModeW = */VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		/*.mipLodBias = */0.0f,
+		/*.anisotropyEnable = */VK_FALSE,
+		/*.maxAnisotropy = */1,
+		/*.compareEnable = */VK_FALSE,
+		/*.compareOp = */VK_COMPARE_OP_NEVER,
+		/*.minLod = */0.0f,
+		/*.maxLod = */0.0f,
+		/*.borderColor = */VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+		/*.unnormalizedCoordinates = */VK_FALSE,
+	};
+	vkCreateSampler(g_device, &sampler_ci, NULL, &g_texture.sampler);
+
+	//创建image view
+	VkImageViewCreateInfo view = {
+		/*.sType = */VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags = */0,
+		/*.image = */g_texture.image,
+		/*.viewType = */VK_IMAGE_VIEW_TYPE_2D,
+		/*.format = */tex_format,
+		/*.components =*/
+			{
+				VK_COMPONENT_SWIZZLE_R,
+				VK_COMPONENT_SWIZZLE_G,
+				VK_COMPONENT_SWIZZLE_B,
+				VK_COMPONENT_SWIZZLE_A,
+			},
+		/*.subresourceRange = */{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	vkCreateImageView(g_device, &view, NULL, &g_texture.view);
+}
+
+void PrepareDataBuffer()
+{
+	
 }
 
 void PrepareRenderResource()
 {
 	PrepareDepth();
+	PrepareCubeTexture();
+	PrepareDataBuffer();
 }
 
 int main()
