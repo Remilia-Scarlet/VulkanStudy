@@ -17,6 +17,8 @@ message(STATUS "Vulkan_INCLUDE_DIRS: ${Vulkan_INCLUDE_DIRS}")
 # Let's make a library and link vulkan
 include_directories(${Vulkan_INCLUDE_DIRS})
 add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
+add_definitions(-D_USE_MATH_DEFINES)
+
 
 # 搜集全部文件列表
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)

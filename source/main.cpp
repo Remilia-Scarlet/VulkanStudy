@@ -6,10 +6,15 @@
 #include "vulkan/vulkan.h"
 #include "common.h"
 
+#include "linmath.h"
+
 #include "CubeTexture.h"
 
 //准备启用的layer
-const char* g_enabled_global_layers[] = {"VK_LAYER_KHRONOS_validation"};
+const char* g_enabled_global_layers[] = {
+	"VK_LAYER_KHRONOS_validation",
+	//"VK_LAYER_LUNARG_api_dump"
+};
 
 //准备启用的extension
 const char* g_enabled_global_extensions[] = {
@@ -25,6 +30,11 @@ int g_window_width = 500;
 int g_window_height = 500;
 HINSTANCE g_hinstance = NULL;
 HWND g_hwnd = NULL;
+
+//视口，矩阵，旋转相关
+mat4x4 g_projection_matrix;
+mat4x4 g_view_matrix;
+mat4x4 g_model_matrix;
 
 //Vulkan
 VkInstance g_instance = VK_NULL_HANDLE;
@@ -49,6 +59,10 @@ struct SwapchainImageResources
 {
 	VkImage image;
 	VkImageView view;
+
+	VkBuffer uniform_buffer;
+	VkDeviceMemory uniform_memory;
+	void *uniform_memory_ptr;
 };
 std::vector<SwapchainImageResources> g_swapchain_image_resources;
 
@@ -72,6 +86,107 @@ struct Texture
 	VkImageView view;
 };
 Texture g_texture;
+
+//vs的uniform buffer
+struct VsUniformStruct {
+	// Must start with MVP
+	float mvp[4][4];
+	float position[12 * 3][4];
+	float attr[12 * 3][4];
+};
+VsUniformStruct g_vs_uniform_struct;
+
+
+//--------------------------------------------------------------------------------------
+// Mesh and VertexFormat Data
+//--------------------------------------------------------------------------------------
+static const float g_vertex_buffer_data[] = {
+	-1.0f,-1.0f,-1.0f,  // -X side
+	-1.0f,-1.0f, 1.0f,
+	-1.0f, 1.0f, 1.0f,
+	-1.0f, 1.0f, 1.0f,
+	-1.0f, 1.0f,-1.0f,
+	-1.0f,-1.0f,-1.0f,
+
+	-1.0f,-1.0f,-1.0f,  // -Z side
+	 1.0f, 1.0f,-1.0f,
+	 1.0f,-1.0f,-1.0f,
+	-1.0f,-1.0f,-1.0f,
+	-1.0f, 1.0f,-1.0f,
+	 1.0f, 1.0f,-1.0f,
+
+	-1.0f,-1.0f,-1.0f,  // -Y side
+	 1.0f,-1.0f,-1.0f,
+	 1.0f,-1.0f, 1.0f,
+	-1.0f,-1.0f,-1.0f,
+	 1.0f,-1.0f, 1.0f,
+	-1.0f,-1.0f, 1.0f,
+
+	-1.0f, 1.0f,-1.0f,  // +Y side
+	-1.0f, 1.0f, 1.0f,
+	 1.0f, 1.0f, 1.0f,
+	-1.0f, 1.0f,-1.0f,
+	 1.0f, 1.0f, 1.0f,
+	 1.0f, 1.0f,-1.0f,
+
+	 1.0f, 1.0f,-1.0f,  // +X side
+	 1.0f, 1.0f, 1.0f,
+	 1.0f,-1.0f, 1.0f,
+	 1.0f,-1.0f, 1.0f,
+	 1.0f,-1.0f,-1.0f,
+	 1.0f, 1.0f,-1.0f,
+
+	-1.0f, 1.0f, 1.0f,  // +Z side
+	-1.0f,-1.0f, 1.0f,
+	 1.0f, 1.0f, 1.0f,
+	-1.0f,-1.0f, 1.0f,
+	 1.0f,-1.0f, 1.0f,
+	 1.0f, 1.0f, 1.0f,
+};
+
+static const float g_uv_buffer_data[] = {
+	0.0f, 1.0f,  // -X side
+	1.0f, 1.0f,
+	1.0f, 0.0f,
+	1.0f, 0.0f,
+	0.0f, 0.0f,
+	0.0f, 1.0f,
+
+	1.0f, 1.0f,  // -Z side
+	0.0f, 0.0f,
+	0.0f, 1.0f,
+	1.0f, 1.0f,
+	1.0f, 0.0f,
+	0.0f, 0.0f,
+
+	1.0f, 0.0f,  // -Y side
+	1.0f, 1.0f,
+	0.0f, 1.0f,
+	1.0f, 0.0f,
+	0.0f, 1.0f,
+	0.0f, 0.0f,
+
+	1.0f, 0.0f,  // +Y side
+	0.0f, 0.0f,
+	0.0f, 1.0f,
+	1.0f, 0.0f,
+	0.0f, 1.0f,
+	1.0f, 1.0f,
+
+	1.0f, 0.0f,  // +X side
+	0.0f, 0.0f,
+	0.0f, 1.0f,
+	0.0f, 1.0f,
+	1.0f, 1.0f,
+	1.0f, 0.0f,
+
+	0.0f, 0.0f,  // +Z side
+	0.0f, 1.0f,
+	1.0f, 0.0f,
+	0.0f, 1.0f,
+	1.0f, 1.0f,
+	1.0f, 0.0f,
+};
 
 void EnumerateGlobalExtAndLayer()
 {
@@ -771,7 +886,7 @@ void PrepareCubeTexture()
 	vkGetPhysicalDeviceFormatProperties(g_gpu, tex_format, &props);
 	PrintPhysicalDeviceFormatProperties(tex_format, props);
 	//验证这个gpu是可以处理我们这个格式的
-	if (props.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT )
+	if (!(props.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT ))
 	{
 		std::cout << "err: No support for R8G8B8A8_UNORM as texture image format" << std::endl;
 	}
@@ -905,7 +1020,64 @@ void PrepareCubeTexture()
 
 void PrepareDataBuffer()
 {
+	vec3 eye = { 0.0f, 3.0f, 5.0f };
+	vec3 origin = { 0, 0, 0 };
+	vec3 up = { 0.0f, 1.0f, 0.0 };
+	//准备MVP矩阵
+	mat4x4_perspective(g_projection_matrix, (float)degreesToRadians(45.0f), 1.0f, 0.1f, 100.0f);
+	mat4x4_look_at(g_view_matrix, eye, origin, up);
+	mat4x4_identity(g_model_matrix);
+	g_projection_matrix[1][1] *= -1;  // Flip projection matrix from GL to Vulkan orientation.
+	mat4x4 MVP, VP;
+	mat4x4_mul(VP, g_projection_matrix, g_view_matrix);
+	mat4x4_mul(MVP, VP, g_model_matrix);
+	memcpy(g_vs_uniform_struct.mvp, MVP, sizeof(MVP));
+	for (unsigned int i = 0; i < 12 * 3; i++) {
+		g_vs_uniform_struct.position[i][0] = g_vertex_buffer_data[i * 3];
+		g_vs_uniform_struct.position[i][1] = g_vertex_buffer_data[i * 3 + 1];
+		g_vs_uniform_struct.position[i][2] = g_vertex_buffer_data[i * 3 + 2];
+		g_vs_uniform_struct.position[i][3] = 1.0f;
+		g_vs_uniform_struct.attr[i][0] = g_uv_buffer_data[2 * i];
+		g_vs_uniform_struct.attr[i][1] = g_uv_buffer_data[2 * i + 1];
+		g_vs_uniform_struct.attr[i][2] = 0;
+		g_vs_uniform_struct.attr[i][3] = 0;
+	}
 	
+	//准备好了g_vs_uniform_struct，现在开始创建buffer
+	VkBufferCreateInfo buf_info;
+	buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	buf_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+	buf_info.size = sizeof(g_vs_uniform_struct);
+
+	for (size_t i = 0; i < g_swapchain_image_resources.size(); i++) 
+	{
+		//创建VkBuffer
+		vkCreateBuffer(g_device, &buf_info, NULL, &g_swapchain_image_resources[i].uniform_buffer);
+
+		//跟之前的VkImage一样，需要获取它的MemoryRequirements
+		VkMemoryRequirements mem_reqs;
+		vkGetBufferMemoryRequirements(g_device, g_swapchain_image_resources[i].uniform_buffer, &mem_reqs);
+
+		//分配内存
+		uint32_t memory_type_index = GetMemoryTypeFromProperties(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		VkMemoryAllocateInfo mem_alloc{
+			/*.sType = */VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			/*.pNext = */NULL,
+			/*.allocationSize = */mem_reqs.size,
+			/*.memoryTypeIndex = */memory_type_index
+		};
+		vkAllocateMemory(g_device, &mem_alloc, NULL, &g_swapchain_image_resources[i].uniform_memory);
+
+		//开始Map/Unmap设置内存数据,注意这里我们只进行了map，而没有unmap，因为uniform_memory_ptr后面会用
+		vkMapMemory(g_device, g_swapchain_image_resources[i].uniform_memory, 0, VK_WHOLE_SIZE, 0,
+			&g_swapchain_image_resources[i].uniform_memory_ptr);
+
+		memcpy(g_swapchain_image_resources[i].uniform_memory_ptr, &g_vs_uniform_struct, sizeof g_vs_uniform_struct);
+
+		//bind memory到buffer
+		vkBindBufferMemory(g_device, g_swapchain_image_resources[i].uniform_buffer,
+			g_swapchain_image_resources[i].uniform_memory, 0);
+	}
 }
 
 void PrepareRenderResource()
@@ -917,7 +1089,7 @@ void PrepareRenderResource()
 
 int main()
 {
-	g_hinstance = g_hinstance;
+	g_hinstance = GetModuleHandle(NULL);
 
 	PreparePhysicalDevice();
 	PrepareSwapchain();

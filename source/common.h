@@ -401,6 +401,7 @@ static std::string VkFormatFeatureFlagBits2Str(VkFormatFeatureFlags flags)
 	IF_FLAG_THEN_ADD_TO_STR(VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT)
 	return str.empty() ? std::string("0") : str;
 }
+
 static void PrintPhysicalDeviceFormatProperties(VkFormat format, const VkFormatProperties& props)
 {
 	std::cout << "\nFormat properties:" << std::endl;
