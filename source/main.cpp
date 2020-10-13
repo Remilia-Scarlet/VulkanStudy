@@ -53,6 +53,10 @@ VkFence g_fences[FRAME_LAG]; //在vkQueueSubmit时带的fence，在每一帧draw
 VkCommandPool g_cmd_pool;
 VkCommandBuffer g_init_cmd = VK_NULL_HANDLE; //这个cb只在初始化时，提供一些特殊cmd的buffer，例如set image layout
 VkSwapchainKHR g_swapchain = VK_NULL_HANDLE;
+VkDescriptorSetLayout g_desc_layout;
+VkPipelineLayout g_pipeline_layout;
+VkRenderPass g_render_pass;
+VkPipelineCache g_pipeline_cache;
 
 //每个swapchain对应一个SwapchainImageResources，里面储存了swapchain的image，cb，uniform buffer等
 struct SwapchainImageResources
@@ -1080,11 +1084,225 @@ void PrepareDataBuffer()
 	}
 }
 
+void PrepareDescriptorSetLayout()
+{
+	const VkDescriptorSetLayoutBinding layout_bindings[2] = {
+		{
+			/*.binding = */0,
+			/*.descriptorType = */VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			/*.descriptorCount = */1,
+			/*.stageFlags = */VK_SHADER_STAGE_VERTEX_BIT,
+			/*.pImmutableSamplers = */NULL,
+		},
+		{
+			/*.binding = */1,
+			/*.descriptorType = */VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			/*.descriptorCount = */1,
+			/*.stageFlags = */VK_SHADER_STAGE_FRAGMENT_BIT,
+			/*.pImmutableSamplers = */NULL,
+		},
+	};
+	const VkDescriptorSetLayoutCreateInfo descriptor_layout = {
+		/*.sType = */VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags = */0,
+		/*.bindingCount = */2,
+		/*.pBindings = */layout_bindings
+	};
+	vkCreateDescriptorSetLayout(g_device, &descriptor_layout, NULL, &g_desc_layout);
+
+	const VkPipelineLayoutCreateInfo pipeline_layout_create_info = {
+		/*.sType = */VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags = */0,
+		/*.setLayoutCount = */1,
+		/*.pSetLayouts = */&g_desc_layout,
+		/*.pushConstantRangeCount = */0,
+		/*.pPushConstantRanges = */NULL
+	};
+	vkCreatePipelineLayout(g_device, &pipeline_layout_create_info, NULL, &g_pipeline_layout);
+}
+
+void PrepareRenderPass()
+{
+	//color和depth的初始layout是LAYOUT_UNDEFINED
+	//因为在renderpass一开始我们并不关心它里面的内容
+	//在subpass开始的时候，color attachment会被transition到LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+	//depth会被transition到LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+	//在renderpass结束时，color attachment会被transition到LAYOUT_PRESENT_SRC_KHR，然后拿去present
+	//这些都是作为renderpass的一部分来完成的，无需barriers
+	const VkAttachmentDescription attachments[2] = {
+		{
+			/*.flags = */0,
+			/*.format = */g_surface_format.format,
+			/*.samples = */VK_SAMPLE_COUNT_1_BIT,
+			/*.loadOp = */VK_ATTACHMENT_LOAD_OP_CLEAR,
+			/*.storeOp = */VK_ATTACHMENT_STORE_OP_STORE,
+			/*.stencilLoadOp = */VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			/*.stencilStoreOp = */VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			/*.initialLayout = */VK_IMAGE_LAYOUT_UNDEFINED,
+			/*.finalLayout = */VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		},
+		{
+			/*.flags = */0,
+			/*.format = */g_depth.format,
+			/*.samples = */VK_SAMPLE_COUNT_1_BIT,
+			/*.loadOp = */VK_ATTACHMENT_LOAD_OP_CLEAR,
+			/*.storeOp = */VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			/*.stencilLoadOp = */VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			/*.stencilStoreOp = */VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			/*.initialLayout = */VK_IMAGE_LAYOUT_UNDEFINED,
+			/*.finalLayout = */VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		},
+	};
+	const VkAttachmentReference color_reference = {
+		/*.attachment = */0,
+		/*.layout = */VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	};
+	const VkAttachmentReference depth_reference = {
+		/*.attachment = */1,
+		/*.layout = */VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	};
+	const VkSubpassDescription subpass = {
+		/*.flags = */0,
+		/*.pipelineBindPoint = */VK_PIPELINE_BIND_POINT_GRAPHICS,
+		/*.inputAttachmentCount = */0,
+		/*.pInputAttachments = */NULL,
+		/*.colorAttachmentCount = */1,
+		/*.pColorAttachments = */&color_reference,
+		/*.pResolveAttachments = */NULL,
+		/*.pDepthStencilAttachment = */&depth_reference,
+		/*.preserveAttachmentCount = */0,
+		/*.pPreserveAttachments = */NULL,
+	};
+
+	VkSubpassDependency attachmentDependencies[2] = {
+		{
+			// Depth buffer is shared between swapchain images
+			/*.srcSubpass = */VK_SUBPASS_EXTERNAL,
+			/*.dstSubpass = */0,
+			/*.srcStageMask = */VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			/*.dstStageMask = */VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			/*.srcAccessMask = */VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			/*.dstAccessMask = */VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			/*.dependencyFlags = */0,
+		},
+		{
+			// Image Layout Transition
+			/*.srcSubpass = */VK_SUBPASS_EXTERNAL,
+			/*.dstSubpass = */0,
+			/*.srcStageMask = */VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			/*.dstStageMask = */VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			/*.srcAccessMask = */0,
+			/*.dstAccessMask = */VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+			/*.dependencyFlags = */0,
+		},
+	};
+
+	const VkRenderPassCreateInfo rp_info = {
+		/*.sType = */VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+		/*.pNext = */NULL,
+		/*.flags = */0,
+		/*.attachmentCount = */2,
+		/*.pAttachments = */attachments,
+		/*.subpassCount = */1,
+		/*.pSubpasses = */&subpass,
+		/*.dependencyCount = */2,
+		/*.pDependencies = */attachmentDependencies,
+	};
+	vkCreateRenderPass(g_device, &rp_info, NULL, &g_render_pass);
+}
+
+void PreparePipeline()
+{
+	//首先创建pipeline cache，所有的pipeline都从cache中分配出来
+	VkPipelineCacheCreateInfo pipeline_cache_ci;
+	memset(&pipeline_cache_ci, 0, sizeof(pipeline_cache_ci));
+	pipeline_cache_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	vkCreatePipelineCache(g_device, &pipeline_cache_ci, NULL, &g_pipeline_cache);
+
+	//下面开始创建pipeline
+	constexpr int NUM_DYNAMIC_STATES = 2; /*Viewport + Scissor*/
+	VkPipelineCacheCreateInfo pipelineCache;
+	VkPipelineVertexInputStateCreateInfo vi;
+	VkPipelineInputAssemblyStateCreateInfo ia;
+	VkPipelineRasterizationStateCreateInfo rs;
+	VkPipelineColorBlendStateCreateInfo cb;
+	VkPipelineDepthStencilStateCreateInfo ds;
+	VkPipelineViewportStateCreateInfo vp;
+	VkPipelineMultisampleStateCreateInfo ms;
+	VkDynamicState dynamicStateEnables[NUM_DYNAMIC_STATES];
+	VkPipelineDynamicStateCreateInfo dynamicState;
+
+	memset(dynamicStateEnables, 0, sizeof dynamicStateEnables);
+	memset(&dynamicState, 0, sizeof dynamicState);
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.pDynamicStates = dynamicStateEnables;
+
+	memset(&vi, 0, sizeof(vi));
+	vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	memset(&ia, 0, sizeof(ia));
+	ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	memset(&rs, 0, sizeof(rs));
+	rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rs.polygonMode = VK_POLYGON_MODE_FILL;
+	rs.cullMode = VK_CULL_MODE_BACK_BIT;
+	rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rs.depthClampEnable = VK_FALSE;
+	rs.rasterizerDiscardEnable = VK_FALSE;
+	rs.depthBiasEnable = VK_FALSE;
+	rs.lineWidth = 1.0f;
+
+	memset(&cb, 0, sizeof(cb));
+	cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	VkPipelineColorBlendAttachmentState att_state[1];
+	memset(att_state, 0, sizeof(att_state));
+	att_state[0].colorWriteMask = 0xf;
+	att_state[0].blendEnable = VK_FALSE;
+	cb.attachmentCount = 1;
+	cb.pAttachments = att_state;
+
+	memset(&vp, 0, sizeof(vp));
+	vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	vp.viewportCount = 1;
+	dynamicStateEnables[dynamicState.dynamicStateCount++] = VK_DYNAMIC_STATE_VIEWPORT;
+	vp.scissorCount = 1;
+	dynamicStateEnables[dynamicState.dynamicStateCount++] = VK_DYNAMIC_STATE_SCISSOR;
+
+	memset(&ds, 0, sizeof(ds));
+	ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	ds.depthTestEnable = VK_TRUE;
+	ds.depthWriteEnable = VK_TRUE;
+	ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+	ds.depthBoundsTestEnable = VK_FALSE;
+	ds.back.failOp = VK_STENCIL_OP_KEEP;
+	ds.back.passOp = VK_STENCIL_OP_KEEP;
+	ds.back.compareOp = VK_COMPARE_OP_ALWAYS;
+	ds.stencilTestEnable = VK_FALSE;
+	ds.front = ds.back;
+
+	memset(&ms, 0, sizeof(ms));
+	ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	ms.pSampleMask = NULL;
+	ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkGraphicsPipelineCreateInfo pipeline;
+	memset(&pipeline, 0, sizeof(pipeline));
+	pipeline.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipeline.layout = g_pipeline_layout;
+}
+
 void PrepareRenderResource()
 {
 	PrepareDepth();
 	PrepareCubeTexture();
 	PrepareDataBuffer();
+	PrepareDescriptorSetLayout();
+	PrepareRenderPass();
+	PreparePipeline();
 }
 
 int main()
