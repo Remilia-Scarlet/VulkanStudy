@@ -1152,6 +1152,12 @@ void PrepareDataBuffer()
 	}
 }
 
+//以前API的Shader资源绑定是个线性的结构，例如
+//t0绑定texture0
+//s0绑定sampler0
+//c0绑定constbuffer0
+//新API不一样，它是一个二维的结构。我们可以把一堆texture, sampler, cb等组合到一起，先创建一个DescriptorSetLayout。
+//然后在创建PipelineLayout时，我们可以绑定一个或多个DescriptorSetLayout。
 void PrepareDescriptorSetLayout()
 {
 	VkResult err;
